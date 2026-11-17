@@ -225,6 +225,7 @@ pub fn run_bench_with_scheme<CP, Scheme>(
 where
     CP: CommitmentEvaluationProof,
     Scheme: BenchScheme<CP>,
+    VerifiableQueryResult<CP>: Clone,
 {
     let time = Instant::now();
     let setup = Scheme::setup(options, ppot_path)?;
@@ -298,10 +299,18 @@ where
 
                 let num_query_results = res.result.num_rows();
 
-                let time = Instant::now();
-                res.verify(&plan, &accessor, &verifier_setup, params)
-                    .map_err(|err| BenchRunError::Verify(err.to_string()))?;
-                let verify_elapsed = time.elapsed().as_secs_f64() * 1e3;
+                // Verification repeats for up to a second; the median is
+                // reported. Each run verifies a copy, made outside the timing.
+                let mut times = Vec::new();
+                while times.is_empty() || times.iter().sum::<f64>() < 1e3 {
+                    let res = res.clone();
+                    let time = Instant::now();
+                    res.verify(&plan, &accessor, &verifier_setup, params)
+                        .map_err(|err| BenchRunError::Verify(err.to_string()))?;
+                    times.push(time.elapsed().as_secs_f64() * 1e3);
+                }
+                times.sort_by(f64::total_cmp);
+                let verify_elapsed = times[times.len() / 2];
 
                 results.push(BenchResult {
                     commitment_scheme: Scheme::name(),
