@@ -19,7 +19,7 @@ use nova_snark::{
 use proof_of_sql::{
     base::{
         commitment::{CommitmentEvaluationProof, InnerProductProof},
-        database::TableRef,
+        database::{CommitmentAccessor, TableRef},
         try_standard_binary_serialization,
     },
     proof_primitive::hyperkzg::{
@@ -60,10 +60,17 @@ pub struct BenchResult {
     pub query: String,
     pub table_size: usize,
     pub iteration: usize,
-    pub generate_proof_ms: u128,
-    pub verify_proof_ms: u128,
+    pub generate_proof_ms: f64,
+    pub verify_proof_ms: f64,
     pub proof_bytes: u64,
     pub num_query_results: usize,
+    /// Generating the public setup, shared by every query of a run.
+    pub setup_ms: f64,
+    pub pk_bytes: u64,
+    pub vk_bytes: u64,
+    /// Committing the query's tables, and the commitments' serialized size.
+    pub commit_ms: f64,
+    pub commitment_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +120,8 @@ pub trait BenchScheme<CP: CommitmentEvaluationProof> {
     fn prover_setup<'a>(setup: &'a Self::OwnedSetup) -> CP::ProverPublicSetup<'a>;
     fn verifier_setup<'a>(setup: &'a Self::OwnedSetup) -> CP::VerifierPublicSetup<'a>;
     fn proof_bytes(proof: &QueryProof<CP>) -> Result<u64, BenchRunError>;
+    fn prover_setup_bytes(setup: &Self::OwnedSetup) -> u64;
+    fn verifier_setup_bytes(setup: &Self::OwnedSetup) -> u64;
 }
 
 /// Converts an Arkworks BN254 G1 Affine point to a Halo2 BN256 G1 Affine point.
@@ -197,6 +206,15 @@ impl BenchScheme<HyperKZGCommitmentEvaluationProof> for HyperKzgBenchScheme {
             .map_err(|err| BenchRunError::Proof(err.to_string()))?;
         Ok(bytes.len() as u64)
     }
+
+    fn prover_setup_bytes(setup: &Self::OwnedSetup) -> u64 {
+        use ark_serialize::CanonicalSerialize;
+        setup.prover_setup.compressed_size() as u64
+    }
+
+    fn verifier_setup_bytes(setup: &Self::OwnedSetup) -> u64 {
+        try_standard_binary_serialization(&setup.verifier_setup).map_or(0, |b| b.len() as u64)
+    }
 }
 
 pub fn run_bench_with_scheme<CP, Scheme>(
@@ -208,7 +226,13 @@ where
     CP: CommitmentEvaluationProof,
     Scheme: BenchScheme<CP>,
 {
+    let time = Instant::now();
     let setup = Scheme::setup(options, ppot_path)?;
+    let setup_ms = time.elapsed().as_secs_f64() * 1e3;
+    let (pk_bytes, vk_bytes) = (
+        Scheme::prover_setup_bytes(&setup),
+        Scheme::verifier_setup_bytes(&setup),
+    );
     let prover_setup = Scheme::prover_setup(&setup);
     let verifier_setup = Scheme::verifier_setup(&setup);
 
@@ -220,6 +244,7 @@ where
     let mut rng = rng(options);
 
     for (query, sql, tables, params) in queries {
+        let (mut commit_ms, mut commitment_bytes) = (0.0, 0);
         // Build tables
         for table in tables {
             let columns_built = generate_columns_with_override(
@@ -230,11 +255,15 @@ where
                 table_size_for_query(options.table_size, query),
                 options.column_override,
             );
-            accessor.insert_table(
-                TableRef::from_names(None, table.name),
-                &columns_built,
-                &prover_setup,
-            );
+            let table_ref = TableRef::from_names(None, table.name);
+            let time = Instant::now();
+            accessor.insert_table(table_ref.clone(), &columns_built, &prover_setup);
+            commit_ms += time.elapsed().as_secs_f64() * 1e3;
+            for (column, _) in &columns_built {
+                let commitment = accessor.get_commitment(&table_ref, column);
+                commitment_bytes += try_standard_binary_serialization(commitment)
+                    .map_or(0, |bytes| bytes.len() as u64);
+            }
         }
 
         #[allow(deprecated)]
@@ -265,14 +294,14 @@ where
                 )
                 .map_err(|err| BenchRunError::Proof(err.to_string()))?;
                 let proof_bytes = Scheme::proof_bytes(&res.proof)?;
-                let generate_proof_elapsed = time.elapsed().as_millis();
+                let generate_proof_elapsed = time.elapsed().as_secs_f64() * 1e3;
 
                 let num_query_results = res.result.num_rows();
 
                 let time = Instant::now();
                 res.verify(&plan, &accessor, &verifier_setup, params)
                     .map_err(|err| BenchRunError::Verify(err.to_string()))?;
-                let verify_elapsed = time.elapsed().as_millis();
+                let verify_elapsed = time.elapsed().as_secs_f64() * 1e3;
 
                 results.push(BenchResult {
                     commitment_scheme: Scheme::name(),
@@ -283,6 +312,11 @@ where
                     verify_proof_ms: verify_elapsed,
                     proof_bytes,
                     num_query_results,
+                    setup_ms,
+                    pk_bytes,
+                    vk_bytes,
+                    commit_ms,
+                    commitment_bytes,
                 });
             }
         }
@@ -317,6 +351,14 @@ impl BenchScheme<InnerProductProof> for InnerProductBenchScheme {
 
     fn proof_bytes(_proof: &QueryProof<InnerProductProof>) -> Result<u64, BenchRunError> {
         Ok(0)
+    }
+
+    fn prover_setup_bytes(_setup: &Self::OwnedSetup) -> u64 {
+        0
+    }
+
+    fn verifier_setup_bytes(_setup: &Self::OwnedSetup) -> u64 {
+        0
     }
 }
 
