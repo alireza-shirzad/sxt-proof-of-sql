@@ -18,7 +18,7 @@ use nova_snark::{
 };
 use proof_of_sql::{
     base::{
-        commitment::{CommitmentEvaluationProof, InnerProductProof},
+        commitment::CommitmentEvaluationProof,
         database::{CommitmentAccessor, TableRef},
         try_standard_binary_serialization,
     },
@@ -337,8 +337,13 @@ where
     })
 }
 
+#[cfg(feature = "blitzar")]
+use proof_of_sql::base::commitment::InnerProductProof;
+
+#[cfg(feature = "blitzar")]
 pub struct InnerProductBenchScheme;
 
+#[cfg(feature = "blitzar")]
 impl BenchScheme<InnerProductProof> for InnerProductBenchScheme {
     type OwnedSetup = ();
 

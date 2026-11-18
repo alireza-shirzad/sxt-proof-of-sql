@@ -9,8 +9,10 @@ pub mod random_util;
 pub use benchmark_accessor::BenchmarkAccessor;
 pub use bench_runner::{
     run_bench_with_scheme, run_hyperkzg_bench, BenchOptions, BenchResult, BenchRunError,
-    BenchRunOutput, BenchScheme, HyperKzgBenchScheme, InnerProductBenchScheme,
+    BenchRunOutput, BenchScheme, HyperKzgBenchScheme,
 };
+#[cfg(feature = "blitzar")]
+pub use bench_runner::InnerProductBenchScheme;
 pub use parquet_export::{export_tables_to_parquet, ParquetExportError};
 pub use queries::{all_queries, get_query, BaseEntry, QueryEntry, TableDefinition};
 pub use random_util::{
