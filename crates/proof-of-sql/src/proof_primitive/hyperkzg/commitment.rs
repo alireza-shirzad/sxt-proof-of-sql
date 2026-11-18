@@ -119,13 +119,14 @@ fn compute_commitment_generic_impl<T: Into<BNScalar> + Clone + Sync>(
     offset: usize,
     scalars: &[T],
 ) -> HyperKZGCommitment {
+    use ark_ec::VariableBaseMSM;
     assert!(offset + scalars.len() <= setup.len());
-    let product: G1Projective = if_rayon!(scalars.par_iter(), scalars.iter())
-        .zip(&setup[offset..offset + scalars.len()])
-        .map(|(t, s)| *s * Into::<BNScalar>::into(t).0)
-        .sum();
+    let exponents: Vec<_> = if_rayon!(scalars.par_iter(), scalars.iter())
+        .map(|t| Into::<BNScalar>::into(t).0)
+        .collect();
+    let bases = &setup[offset..offset + scalars.len()];
     HyperKZGCommitment {
-        commitment: G1Projective::from(product),
+        commitment: G1Projective::msm_unchecked(bases, &exponents),
     }
 }
 
